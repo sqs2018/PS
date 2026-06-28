@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文件分享</title>
+    <link rel="stylesheet" href="/css/styles.css">
+
+</head>
+<body>
+    <div class="system-header">
+        <div class="service-qr">
+            <img id="serviceQrImg" alt="服务地址">
+        </div>
+        <h1>个人文件共享系统</h1>
+    </div>
+    <div class="main-layout">
+        <div class="left-panel">
+            <div class="card">
+                <div class="panel-header">📤 上传文件</div>
+                <div class="panel-content">
+                    <div class="upload-path">
+                        <span class="path-label">上传到：</span>
+                        <span class="path-value" id="currentUploadPath">根目录</span>
+                    </div>
+                    <div class="upload-area" id="uploadArea">
+                        <div class="upload-icon">📁</div>
+                        <div class="upload-text">点击选择文件夹或将文件拖拽到此处</div>
+                        <div class="upload-hint">支持多文件上传</div>
+                        <input type="file" id="fileInput" multiple webkitdirectory>
+                    </div>
+
+                    <div class="file-list" id="fileList"></div>
+
+                    <div style="text-align: center; margin-top: 20px;">
+                        <button class="btn" id="uploadBtn" disabled>上传文件</button>
+                    </div>
+
+                    <div class="loading" id="loading">
+                        <div class="spinner"></div>
+                        <div>上传中，请稍候...</div>
+                        <div class="progress-container">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="progressFill"></div>
+                            </div>
+                            <div class="progress-text" id="progressText">0%</div>
+                        </div>
+                    </div>
+
+                    <div class="result" id="result">
+                        <h3>上传成功！</h3>
+                        <div class="result-row" id="downloadRow">
+                            <label>下载链接</label>
+                            <input type="text" id="downloadUrl" readonly>
+                            <button class="copy-btn" onclick="copyDownloadUrl()">复制</button>
+                        </div>
+                        <div class="qr-container">
+                            <img id="qrCode" alt="二维码">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="right-panel">
+            <div class="card">
+                <div class="panel-header">📂 文件列表</div>
+                <div class="panel-content">
+                    <div class="toolbar">
+                        <div class="search-box">
+                            <input type="text" class="search-input" id="searchInput" placeholder="搜索文件或文件夹...">
+                            <button class="search-btn" onclick="performSearch()">🔍</button>
+                        </div>
+                        <button class="create-folder-btn" onclick="showCreateFolderDialog()">📁 新建文件夹</button>
+                    </div>
+                    <div class="file-tree" id="fileTree"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <!-- 对话框遮罩层 -->
+    <div class="dialog-overlay" id="dialogOverlay" style="display: none;">
+        <div class="dialog-container" id="folderDialog">
+            <div class="dialog-header">
+                <span id="dialogTitle">对话框</span>
+                <button class="dialog-close" onclick="closeDialog()">&times;</button>
+            </div>
+            <div class="dialog-content">
+                <input type="text" id="folderNameInput" placeholder="请输入文件夹名称" style="display: none;">
+                <div id="folderTreeDialog" style="display: none;"></div>
+            </div>
+            <div class="dialog-buttons">
+                <button class="dialog-btn cancel" onclick="closeDialog()">取消</button>
+                <button class="dialog-btn confirm">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const loading = document.getElementById('loading');
+        const result = document.getElementById('result');
+        const historyList = document.getElementById('historyList');
+        let currentUploadPath = null;
+
+        let selectedFiles = [];
+
+        uploadArea.addEventListener('click', () => fileInput.click());
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', () => {
+            handleFiles(fileInput.files);
+        });
+
+        function handleFiles(files) {
+            selectedFiles = Array.from(files);
+            renderFileList();
+            uploadBtn.disabled = selectedFiles.length === 0;
+        }
+
+        let originalTreeData = null;
+
+        function performSearch() {
+            const keyword = document.getElementById('searchInput').value.toLowerCase().trim();
+            const container = document.getElementById('fileTree');
+            
+            if (!keyword) {
+                if (originalTreeData) {
+                    container.innerHTML = renderTreeNode(originalTreeData, 0);
+                }
+                return;
+            }
+            
+            if (!originalTreeData) {
+                container.innerHTML = '<div class="tree-empty">暂无文件</div>';
+                return;
+            }
+
+            const filteredData = filterTree(originalTreeData, keyword);
+            
+            if (!filteredData || filteredData.length === 0) {
+                container.innerHTML = '<div class="tree-empty">未找到匹配的文件或文件夹</div>';
+                return;
+            }
+            
+            container.innerHTML = renderTreeNode(filteredData, 0, true);
+        }
+
+        document.getElementById('searchInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                performSearch();
+            }
+        });
+
+        function filterTree(data, keyword) {
+            //debugger;
+            if (!data) return data;
+            
+            if (Array.isArray(data)) {
+                const filtered = data
+                    .map(node => filterTree(node, keyword))
+                    .filter(node => node !== null);
+                return filtered.length > 0 ? filtered : null;
+            }
+            
+            if (!data.children) {
+                const nameMatch = data.name && data.name.toLowerCase().includes(keyword);
+                console.log("!data.children"+nameMatch);
+                return nameMatch ? data : null;
+            }
+
+            const filteredChildren = data.children
+                .map(node => filterTree(node, keyword))
+                .filter(node => node !== null);
+
+            const nameMatch = data.name && data.name.toLowerCase().includes(keyword);
+            console.log("const nameMatch"+nameMatch);
+            if (nameMatch || filteredChildren.length > 0) {
+                return {
+                    ...data,
+                    children: nameMatch ? data.children : filteredChildren
+                };
+            }
+            
+            return null;
+        }
+
+        function setUploadPath(path, name) {
+            const decodedPath = decodeURIComponent(path);
+            const decodedName = decodeURIComponent(name);
+            currentUploadPath = decodedPath;
+            document.getElementById('currentUploadPath').textContent = decodedName;
+            
+            
+            document.querySelectorAll('.tree-node').forEach(node => {
+                node.classList.remove('selected');
+            });
+            
+            const selectedNode = document.querySelector(`.tree-node[data-path="${decodedPath}"]`);
+            if (selectedNode) {
+                selectedNode.classList.add('selected');
+            }
+            
+            showToast('已选择上传目录：' + decodedName);
+        }
+
+        function showCreateFolderDialog() {
+            document.getElementById('dialogOverlay').style.display = 'flex';
+            document.getElementById('dialogTitle').textContent = '新建文件夹';
+            document.getElementById('folderNameInput').style.display = 'block';
+            document.getElementById('folderTreeDialog').style.display = 'none';
+            document.querySelector('#folderDialog .dialog-buttons').innerHTML = `
+                <button class="dialog-btn cancel" onclick="closeDialog()">取消</button>
+                <button class="dialog-btn confirm" onclick="confirmCreateFolder()">确定</button>
+            `;
+            document.getElementById('folderNameInput').value = '';
+            document.getElementById('folderNameInput').focus();
+        }
+
+        function closeDialog() {
+            document.getElementById('dialogOverlay').style.display = 'none';
+        }
+
+        function confirmCreateFolder() {
+            const folderName = document.getElementById('folderNameInput').value.trim();
+            if (!folderName) {
+                showToast('请输入文件夹名称');
+                return;
+            }
+
+            // 禁用按钮防止重复提交
+            const confirmBtn = document.querySelector('.dialog-btn.confirm');
+            if (confirmBtn) {
+                confirmBtn.disabled = true;
+                confirmBtn.textContent = '创建中...';
+            }
+
+            fetch('/api/folder/create', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ name: folderName })
+            })
+            .then(async response => {
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.success) {
+                    showToast('文件夹创建成功');
+                    closeDialog();
+                    loadHistory();
+                } else {
+                    showToast('创建失败：' + (data.message || '未知错误'));
+                }
+            })
+            .catch(error => {
+                console.error('创建文件夹时出错:', error);
+                showToast('创建失败：' + error.message);
+            })
+            .finally(() => {
+                // 重新启用按钮
+                const confirmBtn = document.querySelector('.dialog-btn.confirm');
+                if (confirmBtn) {
+                    confirmBtn.disabled = false;
+                    confirmBtn.textContent = '确定';
+                }
+            });
+        }
+
+        function renderFileList() {
+            fileList.innerHTML = selectedFiles.map((file, index) => `
+                <div class="file-item">
+                    <span class="name">${file.webkitRelativePath || file.name}</span>
+                    <span class="size">${formatSize(file.size)}</span>
+                    <span class="remove" onclick="removeFile(${index})">&times;</span>
+                </div>
+            `).join('');
+        }
+
+        function removeFile(index) {
+            selectedFiles.splice(index, 1);
+            renderFileList();
+            uploadBtn.disabled = selectedFiles.length === 0;
+        }
+
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+
+        uploadBtn.addEventListener('click', () => {
+            if (selectedFiles.length === 0) return;
+
+            loading.classList.add('show');
+            result.classList.remove('show');
+            uploadBtn.disabled = true;
+            
+            const progressFill = document.getElementById('progressFill');
+            const progressText = document.getElementById('progressText');
+            progressFill.style.width = '0%';
+            progressText.textContent = '0%';
+
+            const formData = new FormData();
+            selectedFiles.forEach(file => {
+                formData.append('files', file, file.webkitRelativePath || file.name);
+            });
+            
+            if (currentUploadPath) {
+                formData.append('targetPath', currentUploadPath);
+            }
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/upload', true);
+
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    const loadedMB = (e.loaded / (1024 * 1024)).toFixed(2);
+                    const totalMB = (e.total / (1024 * 1024)).toFixed(2);
+                    progressFill.style.width = percent + '%';
+                    progressText.textContent = `${percent}% (${loadedMB} MB / ${totalMB} MB)`;
+                }
+            });
+
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                        const data = JSON.parse(xhr.responseText);
+                        document.getElementById('downloadUrl').value = data.downloadUrl;
+                        document.getElementById('qrCode').src = data.qrCode;
+                        result.classList.add('show');
+                        showToast('上传成功！');
+                        loadHistory();
+                    } catch (error) {
+                        showToast('上传失败：解析响应错误');
+                        console.error('解析错误:', error);
+                    }
+                } else {
+                    showToast('上传失败：服务器错误 ' + xhr.status);
+                }
+            };
+
+            xhr.onerror = () => {
+                showToast('上传失败：网络错误');
+            };
+
+            xhr.onabort = () => {
+                showToast('上传已取消');
+            };
+
+            xhr.upload.addEventListener('loadend', () => {
+                loading.classList.remove('show');
+                uploadBtn.disabled = false;
+            });
+
+            xhr.send(formData);
+        });
+
+        async function loadHistory() {
+            try {
+                const response = await fetch('/api/files/tree');
+                const tree = await response.json();
+
+                const container = document.getElementById('fileTree');
+                if (!tree || !tree.children || tree.children.length === 0) {
+                    container.innerHTML = '<div class="tree-empty">暂无文件</div>';
+                    originalTreeData = null;
+                    return;
+                }
+
+                originalTreeData = tree.children;
+                container.innerHTML = renderTreeNode(tree.children, 0);
+            } catch (error) {
+                console.error('Failed to load file tree:', error);
+            }
+        }
+
+        function renderTreeNode(nodes, level, forceExpand = false) {
+            if (!nodes || nodes.length === 0) return '';
+
+            return nodes.map(node => {
+                const isFolder = node.type === 'folder';
+                const hasChildren = isFolder && node.children && node.children.length > 0;
+                const nodeId = 'node_' + Math.random().toString(36).substr(2, 9);
+                const isExpanded = forceExpand && hasChildren;
+                const expandIcon = isExpanded ? '▼' : '▶';
+
+                const encodedPath = encodeURIComponent(node.path);
+                const encodedName = encodeURIComponent(node.name);
+                return `
+                    <div class="tree-node" data-path="${escapeHtml(node.path)}" data-name="${escapeHtml(node.name)}" data-type="${node.type}">
+                        ${Array.from({length: level}).map(() => '<span class="tree-indent"></span>').join('')}
+                        <span class="tree-expand ${hasChildren ? '' : 'empty'}" onclick="event.stopPropagation(); toggleExpand('${nodeId}', this)">${expandIcon}</span>
+                        <span class="tree-icon" ${isFolder ? `onclick="event.stopPropagation(); setUploadPath('${encodedPath}', '${encodedName}')"` : ''}>${isFolder ? '📁' : getFileIcon(node.name)}</span>
+                        <span class="tree-name" ${isFolder ? `onclick="event.stopPropagation(); setUploadPath('${encodedPath}', '${encodedName}')"` : ''}>${escapeHtml(node.name)}</span>
+                        ${!isFolder ? `<span class="tree-size">${formatSize(node.size)}</span>` : ''}
+                        ${!isFolder ? `<span class="tree-date">${formatDate(node.lastModified)}</span>` : ''}
+                        <span class="tree-actions">
+                            <button onclick="event.stopPropagation(); showFileQRFromElement(this.parentElement.parentElement)">二维码</button>
+                            ${isFolder ? 
+                                `<button onclick="event.stopPropagation(); downloadFolderFromElement(this.parentElement.parentElement)">下载</button>` : 
+                                `<button onclick="event.stopPropagation(); downloadSingleFileFromElement(this.parentElement.parentElement)">下载</button>`
+                            }
+                            <button onclick="event.stopPropagation(); deleteItemFromElement(this.parentElement.parentElement)" class="delete-btn">删除</button>
+                        </span>
+                    </div>
+                    <div class="tree-children" id="${nodeId}" style="display:${isExpanded ? 'block' : 'none'};">
+                        ${renderTreeNode(node.children, level + 1, forceExpand)}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function toggleExpand(nodeId, expandEl) {
+            const content = document.getElementById(nodeId);
+            if (content) {
+                const isHidden = content.style.display === 'none' || content.style.display === '';
+                content.style.display = isHidden ? 'block' : 'none';
+                expandEl.classList.toggle('expanded', isHidden);
+            }
+        }
+
+        function getFileIcon(filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            const icons = {
+                'pdf': '📄',
+                'doc': '📝',
+                'docx': '📝',
+                'xls': '📊',
+                'xlsx': '📊',
+                'ppt': '📈',
+                'pptx': '📈',
+                'txt': '📑',
+                'zip': '📦',
+                'rar': '📦',
+                '7z': '📦',
+                'jpg': '🖼️',
+                'jpeg': '🖼️',
+                'png': '🖼️',
+                'gif': '🖼️',
+                'mp4': '🎬',
+                'mp3': '🎵',
+                'avi': '🎬',
+                'mov': '🎬'
+            };
+            return icons[ext] || '📄';
+        }
+
+        function formatDate(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+
+        function downloadSingleFile(filename, path) {
+            window.location.href = '/api/download/file?name=' + filename + '&path=' + encodeURIComponent(path);
+        }
+
+        function downloadSingleFileFromElement(element) {
+            const filename = element.dataset.name;
+            const path = element.dataset.path;
+            window.location.href = '/api/download/file?name=' + encodeURIComponent(filename) + '&path=' + encodeURIComponent(path);
+        }
+
+        function downloadFolderFromElement(element) {
+            const folderName = element.dataset.name;
+            const folderPath = element.dataset.path;
+            window.location.href = '/api/download/path?path=' + encodeURIComponent(folderPath);
+        }
+
+        function deleteItemFromElement(element) {
+            const name = element.dataset.name;
+            const path = element.dataset.path;
+            const type = element.dataset.type;
+            
+            const itemType = type === 'folder' ? '文件夹' : '文件';
+            
+            if (!confirm(`确定要删除${itemType} "${name}" 吗？此操作不可恢复！`)) {
+                return;
+            }
+
+            fetch('/api/delete', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ path: path, type: type })
+            })
+            .then(async response => {
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.success) {
+                    showToast(`${itemType}删除成功`);
+                    loadHistory();
+                } else {
+                    showToast('删除失败：' + (data.message || '未知错误'));
+                }
+            })
+            .catch(error => {
+                console.error('删除时出错:', error);
+                showToast('删除失败：' + error.message);
+            });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        }
+
+        function copyDownloadUrl() {
+            const downloadUrl = document.getElementById('downloadUrl');
+            downloadUrl.select();
+            document.execCommand('copy');
+            
+            const copyBtn = document.querySelector('.copy-btn');
+            copyBtn.textContent = '已复制';
+            copyBtn.classList.add('copied');
+            
+            showToast('下载链接已复制到剪贴板');
+            
+            setTimeout(() => {
+                copyBtn.textContent = '复制';
+                copyBtn.classList.remove('copied');
+            }, 2000);
+        }
+
+        function showFileQR(filename, path, isFolder) {
+            const encodedPath = encodeURIComponent(path);
+            const qrUrl = '/api/qr/download?path=' + encodeURIComponent(encodedPath);
+
+            const overlay = document.createElement('div');
+            overlay.className = 'qr-overlay';
+            overlay.onclick = closeQRPopups;
+
+            const popup = document.createElement('div');
+            popup.className = 'qr-popup';
+            popup.innerHTML = `
+                <h3>${isFolder ? '文件夹' : '文件'}二维码</h3>
+                <img src="${qrUrl}" alt="二维码" style="width:200px;height:200px;">
+                <div class="filename">${filename}</div>
+                <button class="close-btn" onclick="closeQRPopups()">关闭</button>
+            `;
+
+            document.body.appendChild(overlay);
+            document.body.appendChild(popup);
+        }
+
+        function showFileQRFromElement(element) {
+            const filename = element.dataset.name;
+            const path = element.dataset.path;
+            const isFolder = element.dataset.type === 'folder';
+            showFileQR(filename, path, isFolder);
+        }
+
+        function closeQRPopups() {
+            const overlay = document.querySelector('.qr-overlay');
+            const popup = document.querySelector('.qr-popup');
+            if (overlay) overlay.remove();
+            if (popup) popup.remove();
+        }
+        function loadServiceQR() {
+            document.getElementById('serviceQrImg').src = '/api/qr/service?size=80';
+        }
+        loadHistory();
+        loadServiceQR();
+    </script>
+
+</body>
+</html>
